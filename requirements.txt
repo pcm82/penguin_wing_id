@@ -1,17 +1,12 @@
-# --- Core AI & Machine Learning ---
 torch>=2.0.0
 torchvision>=0.15.0
 timm==0.9.12
+# Use the CPU version of wildlife-tools dependencies
+faiss-cpu
 wildlife-tools>=0.0.9
-
-# --- Web Interface & Database ---
 streamlit
 pandas
 psycopg2-binary
 SQLAlchemy
-
-# --- Image Processing ---
-# Pillow is required for Image handling
 Pillow
-# Opencv-headless is required by wildlife-tools for server environments
 opencv-python-headless

@@ -158,15 +158,25 @@ elif st.session_state.current_view == 'Dossier':
         df_pop = pd.read_sql_query("SELECT * FROM individuals", conn)
     
     if df_pop.empty:
-        if st.button("🚀 Auto-Register Photos"):
-            with engine.connect() as conn:
-                for fname in main_dataset.image_files:
-                    conn.execute(text("INSERT INTO individuals (id, display_name, age, mother, father, notes) "
-                                      "VALUES (:id, :dn, 'Adult', 'Unknown', 'Unknown', 'Import') ON CONFLICT (id) DO NOTHING"),
-                                 {"id": fname, "dn": fname})
-                conn.commit()
-            st.rerun()
+        st.info("No individuals registered.")
+        # Restrict registration to Admins only
+        if st.session_state.is_admin:
+            if st.button("🚀 Auto-Register Photos"):
+                with engine.connect() as conn:
+                    for fname in main_dataset.image_files:
+                        conn.execute(text(
+                            "INSERT INTO individuals (id, display_name, age, mother, father, notes) "
+                            "VALUES (:id, :dn, 'Adult', 'Unknown', 'Unknown', 'Import') "
+                            "ON CONFLICT (id) DO NOTHING"),
+                            {"id": fname, "dn": fname}
+                        )
+                    conn.commit()
+                st.success("Registration complete!")
+                st.rerun()
+        else:
+            st.warning("Admin login required to initialize the database.")
     else:
+        # Gallery rendering logic...
         for r_idx in range(0, len(df_pop), 4):
             cols = st.columns(4)
             for c_idx, g_col in enumerate(cols):
