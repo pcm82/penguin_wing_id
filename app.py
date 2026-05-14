@@ -50,8 +50,10 @@ class FlatImageDataset(Dataset):
             f for f in os.listdir(root_dir)
             if f.lower().endswith(('.png', '.jpg', '.jpeg'))
         ]
+
     def __len__(self):
         return len(self.image_files)
+
     def __getitem__(self, idx):
         path = os.path.join(self.root_dir, self.image_files[idx])
         img_item = Image.open(path).convert('RGB')
@@ -77,16 +79,19 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS encounters
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, penguin_id TEXT, 
                   date TEXT, location TEXT)''')
-    # Table to track every edit made to a penguin's dossier
-    cursor.execute('''CREATE TABLE IF NOT EXISTS change_log
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, penguin_id TEXT, 
-              field TEXT, old_value TEXT, new_value TEXT, timestamp TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS change_log 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, penguin_id TEXT, 
+                  field TEXT, old_value TEXT, new_value TEXT, timestamp TEXT)''')
     db_conn.commit()
     db_conn.close()
 
 # --- APP UI ---
 st.set_page_config(page_title="King Penguin Dossier", layout="wide")
 init_db()
+
+# Initialize Navigation State
+if 'current_view' not in st.session_state:
+    st.session_state.current_view = 'Identify'
 
 # Initialize AI with unique names
 main_model, main_extractor, main_transform = load_engine()
@@ -95,15 +100,36 @@ db_features = get_db_fingerprints(main_extractor, main_dataset)
 
 st.title("🐧 King Penguin Identification Dossier")
 
-menu = ["Identify & Log", "View Dossier"]
-choice = st.sidebar.selectbox("Action", menu)
+# Navigation Bar
+st.write("### 🧭 Navigation")
+c1, c2, c3, c4, c5 = st.columns(5)
+with c1:
+    if st.button("🔍 Identify & Log"):
+        st.session_state.current_view = 'Identify'
+with c2:
+    if st.button("🗂️ View Dossier"):
+        st.session_state.current_view = 'Dossier'
+with c3:
+    if st.button("🕒 View Sightings"):
+        st.session_state.current_view = 'Sightings'
+with c4:
+    if st.button("📜 Change Log"):
+        st.session_state.current_view = 'Logs'
+with c5:
+    if st.button("📝 Edit Dossier"):
+        st.session_state.current_view = 'Edit'
 
-if choice == "Identify & Log":
+st.divider()
+
+# --- RENDER VIEWS ---
+conn = sqlite3.connect(DB_PATH)
+
+if st.session_state.current_view == 'Identify':
     st.header("Step 1: Upload New Sighting")
     up_file = st.file_uploader("Upload Wing Image", type=['jpg', 'jpeg', 'png'])
     if up_file:
         query_img = Image.open(up_file).convert('RGB')
-        # Use numeric constant 0 for FLIP_LEFT_RIGHT to avoid Pylint E1101
+        # Use numeric constant 0 for FLIP_LEFT_RIGHT to avoid Pylint error [cite: 137]
         query_flip = query_img.transpose(0)
         t_orig = main_transform(query_img).unsqueeze(0)
         t_flip = main_transform(query_flip).unsqueeze(0)
@@ -123,31 +149,79 @@ if choice == "Identify & Log":
             st.image(query_img, caption="New Sighting", use_container_width=True)
         with col2:
             match_path = os.path.join(DATA_DIR, matched_file)
-            st.image(Image.open(match_path),
+            st.image(Image.open(match_path), 
                      caption=f"Match: {matched_file}", use_container_width=True)
         st.metric("AI Confidence Score", f"{best_score.item()*100:.2f}%")
         st.divider()
         st.subheader("Step 3: Verify & Save")
-        c_a, c_b = st.columns(2)
-        with c_a:
+        col_a, col_b = st.columns(2)
+        with col_a:
             date_val = st.date_input("Sighting Date", datetime.now())
-        with c_b:
+        with col_b:
             loc_val = st.text_input("Location", "Main Colony")
         if st.checkbox(f"Confirm this is {matched_file}?"):
             if st.button("Save Sighting to Dossier"):
-                conn = sqlite3.connect(DB_PATH)
                 conn.execute(
                     "INSERT INTO encounters (penguin_id, date, location) VALUES (?,?,?)",
                     (matched_file, str(date_val), loc_val))
                 conn.commit()
-                conn.close()
                 st.success(f"Logged sighting for {matched_file}!")
         else:
-            st.info("To register as a new penguin, use the View Dossier tab.")
+            st.info("To register as a new penguin, use the 'Edit Dossier' tab.")
 
-elif choice == "View Dossier":
-    st.header("Search Penguin Records")
-    conn = sqlite3.connect(DB_PATH)
-    history = pd.read_sql_query("SELECT * FROM encounters", conn)
-    st.dataframe(history, use_container_width=True)
-    conn.close()
+elif st.session_state.current_view == 'Dossier':
+    st.header("🗂️ Individual Dossiers")
+    df_inds = pd.read_sql_query("SELECT * FROM individuals", conn)
+    st.dataframe(df_inds, use_container_width=True)
+    if st.button("🚀 Auto-Register All Wing Photos"):
+        curr_ids = df_inds['id'].tolist() if not df_inds.empty else []
+        new_count = 0
+        for fname in os.listdir(DATA_DIR):
+            if fname not in curr_ids and fname.lower().endswith(('.png', '.jpg')):
+                conn.execute(
+                    "INSERT INTO individuals (id, age, mother, father, notes) VALUES (?,?,?,?,?)",
+                    (fname, "Adult", "Unknown", "Unknown", "Auto-Imported"))
+                new_count += 1
+        conn.commit()
+        st.success(f"Registered {new_count} new entries!")
+        st.rerun()
+
+elif st.session_state.current_view == 'Sightings':
+    st.header("🕒 Sighting History")
+    df_encs = pd.read_sql_query("SELECT * FROM encounters", conn)
+    st.dataframe(df_encs, use_container_width=True)
+
+elif st.session_state.current_view == 'Logs':
+    st.header("📜 Audit Trail")
+    df_logs = pd.read_sql_query("SELECT * FROM change_log ORDER BY timestamp DESC", conn)
+    st.dataframe(df_logs, use_container_width=True)
+
+elif st.session_state.current_view == 'Edit':
+    st.header("📝 Edit Penguin Metadata")
+    df_ids = pd.read_sql_query("SELECT id FROM individuals", conn)
+    if not df_ids.empty:
+        target = st.selectbox("Select Penguin to Edit", df_ids['id'].tolist())
+        curr = pd.read_sql_query(f"SELECT * FROM individuals WHERE id='{target}'", conn).iloc[0]
+        with st.form("edit_form"):
+            n_age = st.selectbox("Age", ["Chick", "Juvenile", "Adult"], 
+                                index=["Chick", "Juvenile", "Adult"].index(curr['age']))
+            n_mom = st.text_input("Mother ID", curr['mother'])
+            n_dad = st.text_input("Father ID", curr['father'])
+            n_notes = st.text_area("Notes", curr['notes'])
+            if st.form_submit_button("Save Changes"):
+                updates = {'age': n_age, 'mother': n_mom, 'father': n_dad, 'notes': n_notes}
+                for fld, n_val in updates.items():
+                    if str(curr[fld]) != str(n_val):
+                        conn.execute(
+                            "INSERT INTO change_log (penguin_id, field, old_value, new_value, timestamp) VALUES (?,?,?,?,?)",
+                            (target, fld, str(curr[fld]), str(n_val), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                conn.execute(
+                    "UPDATE individuals SET age=?, mother=?, father=?, notes=? WHERE id=?",
+                    (n_age, n_mom, n_dad, n_notes, target))
+                conn.commit()
+                st.success("Changes saved and logged!")
+                st.rerun()
+    else:
+        st.warning("No individuals found. Please register them in the 'Dossier' tab.")
+
+conn.close()
