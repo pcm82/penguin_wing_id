@@ -1,17 +1,23 @@
-# Core Image Processing & ML
-timm==0.9.12
+# --- Core AI & Machine Learning ---
 torch>=2.0.0
 torchvision>=0.15.0
-opencv-python>=4.8.0
-numpy>=1.24.0,<2.0 # Added to satisfy pygam/lifelines constraints
-scipy>=1.11.1,<1.12 # Added to satisfy pygam/lifelines constraints
-
-# Animal Re-Identification Utilities
+timm==0.9.12
 wildlife-tools>=0.0.9
 
-# Google Drive Integration
-gdown>=4.7.0
+# --- Web Interface & Dossier ---
+streamlit
+pandas
+pillow
 
-# Visualization & Data Handling
-pandas>=2.0.0
-matplotlib>=3.7.0
+# --- Data & Utilities ---
+gdown
+python-dateutil
+
+# --- Dependency Conflict Fixes ---
+# Capping these to satisfy lifelines/pygam requirements found in your environment
+numpy>=1.24.0,<2.0
+scipy>=1.11.1,<1.12
+
+# --- Image Processing ---
+# Using 'headless' for server deployment to avoid GUI errors
+opencv-python-headless
