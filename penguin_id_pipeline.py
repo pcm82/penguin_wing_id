@@ -99,11 +99,26 @@ if __name__ == "__main__":
 
     print(f"Extracting fingerprints for {len(dataset)} images...")
     db_features = extractor(dataset)
+    db_features = torch.from_numpy(db_features)
 
     print("--- System Ready ---")
     
-    # 4. TEST EXAMPLE (Uncomment and add a path to test)
-    # test_file = "C:/Users/time4/Desktop/test_penguin.jpg"
-    # if os.path.exists(test_file):
-    #     result = identify_penguin(test_file, penguin_model, img_transform, db_features, dataset.image_files)
-    #     print(f"Match: {result['matched_file']} | Confidence: {result['confidence']}")
+# --- TEST A PHOTO ---
+    # Pick a photo NOT in your database folder, or just copy one out to test
+    test_image_path = "C:\\Users\\time4\\Desktop\\penguin_wing_id\\penguin_wing_test\\test_110a.png" 
+
+    if os.path.exists(test_image_path):
+        result = identify_penguin(
+            test_image_path, 
+            penguin_model, 
+            img_transform, 
+            db_features, 
+            dataset.image_files
+        )
+        
+        print("\n--- IDENTIFICATION RESULT ---")
+        print(f"Matched with: {result['matched_file']}")
+        print(f"Confidence:    {result['confidence'] * 100}%")
+        print(f"Orientation:   {result['match_orientation']}")
+    else:
+        print(f"\nCould not find test file at: {test_image_path}")
