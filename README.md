@@ -38,3 +38,5 @@ Pros: Can automatically find and crop the wing in a large landscape photo.
 
 4. Troubleshooting
 If you encounter Dependency Conflicts, ensure your numpy version is below 2.0 and scipy is between 1.11.1 and 1.12. These specific versions are required for compatibility with common ecology tools like lifelines and pygam.
+
+https://drive.google.com/drive/folders/1Sw6TlXLwTD8441nHSrffX-AzAZX_A6lp
