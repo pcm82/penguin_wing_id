@@ -2,6 +2,7 @@ torch>=2.0.0
 torchvision>=0.15.0
 timm==0.9.12
 faiss-cpu
+# Installing core only to avoid the GPU dependency chain
 wildlife-tools>=0.0.9
 streamlit
 pandas
