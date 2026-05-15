@@ -1,6 +1,7 @@
 torch>=2.0.0
 torchvision>=0.15.0
 timm==0.9.12
+# Essential for CPU math operations
 faiss-cpu
 streamlit
 pandas
@@ -8,4 +9,3 @@ psycopg2-binary
 SQLAlchemy
 Pillow
 opencv-python-headless
-# We will install wildlife-tools via a different method to avoid the GPU error
