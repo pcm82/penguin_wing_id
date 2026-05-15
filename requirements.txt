@@ -1,8 +1,13 @@
 torch>=2.0.0
 torchvision>=0.15.0
 timm==0.9.12
-# Essential for CPU math operations
 faiss-cpu
+# Force install without dependencies to skip the faiss-gpu check
+--no-deps wildlife-tools>=0.0.9
+# Manually list the dependencies that wildlife-tools actually needs
+kornia
+pytorch-metric-learning
+wildlife-datasets
 streamlit
 pandas
 psycopg2-binary
