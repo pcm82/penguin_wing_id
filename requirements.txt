@@ -1,10 +1,11 @@
 torch>=2.0.0
 torchvision>=0.15.0
 timm==0.9.12
-# Essential CPU version
+# Force the CPU version of faiss
 faiss-cpu
-# Core packages
-wildlife-tools>=0.0.9
+# Install from source to skip registry dependency checks
+git+https://github.com/v-m/wildlife-tools.git
+# Manual listing of the tools' requirements to ensure functionality
 kornia
 pytorch-metric-learning
 wildlife-datasets
