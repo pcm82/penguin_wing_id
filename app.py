@@ -15,9 +15,13 @@ from sqlalchemy.pool import NullPool
 if "DATABASE_URL" in st.secrets:
     DB_URI = st.secrets["DATABASE_URL"]
 else:
-    # Fallback for local dev - ensure the '!' in your password is encoded as '%21'
-    DB_URI = "postgresql://postgres.xozmbgbkbdzugsagwghf:penguindatabase2026%21@aws-1-us-east-2.pooler.supabase.com:6543/postgres?prepared_statements=false"
+    # Fallback for local dev - ensure '!' is encoded as '%21'
+    DB_URI = "postgresql://postgres.xozmbgbkbdzugsagwghf:penguindatabase2026%21@aws-1-us-east-2.pooler.supabase.com:6543/postgres"
 
+# Transaction Mode Fix: 
+# We don't pass 'prepared_statements' in the URI. Instead, we use NullPool
+# to ensure SQLAlchemy doesn't try to reuse sessions in a way that conflicts 
+# with the Supavisor Transaction Pooler.
 engine = create_engine(
     DB_URI,
     poolclass=NullPool,
@@ -25,17 +29,13 @@ engine = create_engine(
 )
 
 DATA_DIR = './data/wings'
-PORTRAIT_DIR = './data/portraits'
 os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(PORTRAIT_DIR, exist_ok=True)
 
 # --- 2. AI ENGINE (PURE PYTORCH) ---
 @st.cache_resource
 def load_biometric_model():
-    """Loads MegaDescriptor directly via timm to avoid dependency conflicts."""
     model = timm.create_model('hf-hub:BVRA/MegaDescriptor-T-224', pretrained=True, num_classes=0)
     model.eval()
-    
     transform = T.Compose([
         T.Resize([224, 224]),
         T.ToTensor(),
@@ -44,7 +44,6 @@ def load_biometric_model():
     return model, transform
 
 def extract_embedding(image, model, transform):
-    """Converts an image into a normalized biometric vector."""
     img_tensor = transform(image).unsqueeze(0)
     with torch.no_grad():
         embedding = model(img_tensor)
@@ -52,16 +51,13 @@ def extract_embedding(image, model, transform):
 
 @st.cache_data
 def get_fingerprint_library(_model, _transform):
-    """Scans local wings folder and builds a searchable tensor bank."""
     valid_files = [f for f in os.listdir(DATA_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
     if not valid_files:
         return [], None
-    
     vectors = []
     for fname in valid_files:
         img = Image.open(os.path.join(DATA_DIR, fname)).convert('RGB')
         vectors.append(extract_embedding(img, _model, _transform))
-    
     return valid_files, torch.cat(vectors)
 
 # --- 3. APP INITIALIZATION ---
@@ -110,11 +106,8 @@ if st.session_state.current_view == 'Identify':
     if up_file and library_vectors is not None:
         q_img = Image.open(up_file).convert('RGB')
         q_vec = extract_embedding(q_img, main_model, main_transform)
-        
-        # Biometric Matching (Cosine Similarity via Matrix Multiplication)
         similarities = torch.mm(q_vec, library_vectors.t())
         confidence, best_idx = torch.max(similarities, dim=1)
-        
         match_id = filenames[best_idx.item()]
         
         with engine.connect() as conn:
@@ -134,7 +127,6 @@ elif st.session_state.current_view == 'Dossier':
         
         if df_pop.empty:
             st.info("No individuals registered in Supabase.")
-            # ONLY ADMINS CAN REGISTER
             if st.session_state.is_admin:
                 if st.button("🚀 Auto-Register reference photos"):
                     with engine.connect() as conn:
@@ -154,10 +146,9 @@ elif st.session_state.current_view == 'Dossier':
                     if i + j < len(df_pop):
                         p = df_pop.iloc[i + j]
                         with cols[j]:
-                            img_p = p['rep_image'] if p['rep_image'] else os.path.join(DATA_DIR, p['id'])
+                            img_p = os.path.join(DATA_DIR, p['id'])
                             if os.path.exists(img_p): st.image(img_p, use_container_width=True)
                             st.write(f"**{p['display_name']}**")
-                            st.caption(f"ID: {p['id']}")
     except Exception as e:
         st.error(f"Database Error: {e}")
 
@@ -170,29 +161,20 @@ elif st.session_state.current_view == 'Sightings':
 elif st.session_state.current_view == 'Edit':
     st.header("📝 Metadata Management")
     if not st.session_state.is_admin:
-        st.warning("Admin access required to edit records.")
+        st.warning("Admin access required.")
     else:
         with engine.connect() as conn:
             df_map = pd.read_sql_query("SELECT id, display_name FROM individuals", conn)
-        
         if not df_map.empty:
             choice = st.selectbox("Select Individual", df_map['display_name'])
             target_id = df_map[df_map['display_name'] == choice]['id'].values[0]
-            
-            with engine.connect() as conn:
-                curr = conn.execute(text("SELECT * FROM individuals WHERE id=:id"), {"id": target_id}).fetchone()
-            
             with st.form("edit_form"):
-                new_dn = st.text_input("Display Name", curr[1])
-                new_age = st.selectbox("Age Class", ["Chick", "Juvenile", "Adult"], index=2)
-                new_notes = st.text_area("Notes", curr[5])
+                new_dn = st.text_input("New Name")
                 if st.form_submit_button("Save"):
                     with engine.connect() as conn:
-                        conn.execute(text("UPDATE individuals SET display_name=:dn, age=:ag, notes=:nt WHERE id=:id"),
-                                     {"dn": new_dn, "ag": new_age, "nt": new_notes, "id": target_id})
+                        conn.execute(text("UPDATE individuals SET display_name=:dn WHERE id=:id"), {"dn": new_dn, "id": target_id})
                         conn.commit()
                     st.success("Updated.")
-        else: st.info("No data to edit.")
 
 elif st.session_state.current_view == 'Logs':
     st.header("📜 Audit Logs")
@@ -200,5 +182,3 @@ elif st.session_state.current_view == 'Logs':
         with engine.connect() as conn:
             df_log = pd.read_sql_query("SELECT * FROM change_log ORDER BY id DESC", conn)
         st.dataframe(df_log, use_container_width=True)
-    else:
-        st.info("Admin login required.")
