@@ -8,4 +8,4 @@ pandas
 psycopg2-binary
 SQLAlchemy
 Pillow
-opencv-python-headlessgit
+opencv-python-headless
