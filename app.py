@@ -2,6 +2,16 @@
 Penguin Wing Identification App
 A Streamlit-based tool for biometric identification and dossier management.
 """
+import subprocess
+import sys
+
+# Force-install wildlife-tools without triggering the faiss-gpu check
+try:
+    import wildlife_tools
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "wildlife-tools", "--no-deps"])
+    # Also install the necessary sub-dependencies manually to be safe
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "kornia", "pytorch-metric-learning", "wildlife-datasets"])
 
 import os
 import sqlite3
