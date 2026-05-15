@@ -1,7 +1,6 @@
 torch>=2.0.0
 torchvision>=0.15.0
 timm==0.9.12
-# Use the CPU version of wildlife-tools dependencies
 faiss-cpu
 wildlife-tools>=0.0.9
 streamlit
