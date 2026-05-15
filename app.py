@@ -1,260 +1,218 @@
-"""
-Penguin Wing Identification App
-A Streamlit-based tool for biometric identification and dossier management.
-"""
 import os
-import sqlite3
-from datetime import datetime
-import streamlit as st
-import pandas as pd
 import torch
 import timm
+import pandas as pd
+import streamlit as st
 import torchvision.transforms as T
+import torch.nn.functional as F
 from PIL import Image
-from torch.utils.data import Dataset
-from wildlife_tools.features import DeepFeatures
+from datetime import datetime
+from sqlalchemy import create_engine, text
 
-# --- CONFIGURATION & PATHS ---
+# --- CONFIGURATION ---
+# Using your provided Supabase URI for persistent cloud storage
+DB_URI = "postgresql://postgres:penguindatabase2026!@db.xozmbgbkbdzugsagwghf.supabase.co:5432/postgres"
 DATA_DIR = './data/wings'
-DB_PATH = "./data/database.db"
+PORTRAIT_DIR = './data/portraits'
 
-# Ensure data directory exists
-os.makedirs("./data", exist_ok=True)
+# Ensure local directories exist for temporary processing
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(PORTRAIT_DIR, exist_ok=True)
 
-# --- CACHED AI ENGINE ---
+# Database Engine
+engine = create_engine(DB_URI)
+
+# --- AI ENGINE (PURE PYTORCH) ---
 @st.cache_resource
-def load_engine():
-    """Loads the model once and keeps it in memory."""
-    biometric_model = timm.create_model(
-        'hf-hub:BVRA/MegaDescriptor-T-224',
-        pretrained=True,
-        num_classes=0
-    )
-    biometric_model.eval()
-    # Use num_workers=0 for Windows stability
-    model_extractor = DeepFeatures(biometric_model, num_workers=0)
-    model_transform = T.Compose([
+def load_biometric_model():
+    """
+    Loads the MegaDescriptor-T-224 model directly via timm.
+    This bypasses the 'wildlife-tools' and 'faiss-gpu' dependency errors.
+    """
+    # Create the model using the Hugging Face hub reference
+    model = timm.create_model('hf-hub:BVRA/MegaDescriptor-T-224', pretrained=True, num_classes=0)
+    model.eval()
+    
+    # Standard normalization for the MegaDescriptor model
+    transform = T.Compose([
         T.Resize([224, 224]),
         T.ToTensor(),
         T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
     ])
-    return biometric_model, model_extractor, model_transform
+    return model, transform
 
-class FlatImageDataset(Dataset):
-    """Dataset for loading images from a flat directory structure."""
-    def __init__(self, root_dir, transform=None):
-        self.root_dir = root_dir
-        self.transform = transform
-        self.image_files = [
-            f for f in os.listdir(root_dir)
-            if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-        ]
-
-    def __len__(self):
-        return len(self.image_files)
-
-    def __getitem__(self, idx):
-        path = os.path.join(self.root_dir, self.image_files[idx])
-        img_item = Image.open(path).convert('RGB')
-        if self.transform:
-            img_item = self.transform(img_item)
-        return img_item, self.image_files[idx]
+def extract_embedding(image, model, transform):
+    """Converts a PIL image into a normalized biometric vector (embedding)."""
+    img_tensor = transform(image).unsqueeze(0)
+    with torch.no_grad():
+        embedding = model(img_tensor)
+    # L2 Normalization allows us to use simple matrix multiplication for similarity
+    return F.normalize(embedding, p=2, dim=1)
 
 @st.cache_data
-def get_db_fingerprints(_extractor, _dataset):
-    """Caches the fingerprints of your entire library."""
-    features = _extractor(_dataset)
-    if not isinstance(features, torch.Tensor):
-        return torch.from_numpy(features)
-    return features
+def get_fingerprint_library(_model, _transform):
+    """Generates a searchable bank of vectors from the reference wings folder."""
+    valid_files = [f for f in os.listdir(DATA_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    if not valid_files:
+        return [], None
+    
+    vectors = []
+    for fname in valid_files:
+        img = Image.open(os.path.join(DATA_DIR, fname)).convert('RGB')
+        vectors.append(extract_embedding(img, _model, _transform))
+    
+    # Concatenate all individual vectors into a single searchable tensor
+    return valid_files, torch.cat(vectors)
 
-# --- DATABASE LOGIC ---
-def init_db():
-    """Initializes the SQLite database with required tables."""
-    db_conn = sqlite3.connect(DB_PATH)
-    cursor = db_conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS individuals
-                 (id TEXT PRIMARY KEY, display_name TEXT, age TEXT, 
-                  mother TEXT, father TEXT, notes TEXT, rep_image TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS encounters
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, penguin_id TEXT, 
-                  date TEXT, location TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS pending_changes
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, penguin_id TEXT, 
-                  field TEXT, new_value TEXT, user_name TEXT, timestamp TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS change_log 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, penguin_id TEXT, 
-                  field TEXT, old_value TEXT, new_value TEXT, timestamp TEXT)''')
-    db_conn.commit()
-    db_conn.close()
+# --- APP INITIALIZATION ---
+st.set_page_config(page_title="King Penguin CMS", layout="wide")
 
-# --- APP UI ---
-st.set_page_config(page_title="King Penguin Dossier", layout="wide")
-init_db()
+# Load AI components once
+main_model, main_transform = load_biometric_model()
+filenames, library_vectors = get_fingerprint_library(main_model, main_transform)
 
-# Initialize Navigation and Admin State
-if 'current_view' not in st.session_state:
-    st.session_state.current_view = 'Identify'
-if 'is_admin' not in st.session_state:
+# Initialize Session States
+if 'current_view' not in st.session_state: 
+    st.session_state.current_view = 'Dossier'
+if 'is_admin' not in st.session_state: 
     st.session_state.is_admin = False
 
-# Global AI objects renamed to avoid Pylint W0621 shadowing [cite: 74]
-main_model, main_extractor, main_transform = load_engine()
-main_dataset = FlatImageDataset(DATA_DIR, transform=main_transform)
-db_features = get_db_fingerprints(main_extractor, main_dataset)
-
-st.title("🐧 King Penguin Identification Dossier")
-
-# Admin Sidebar
+# Sidebar: Authentication
 with st.sidebar:
+    st.title("🔐 Authentication")
     if not st.session_state.is_admin:
         pwd = st.text_input("Admin Password", type="password")
         if st.button("Login"):
             if pwd == "penguinadmin":
                 st.session_state.is_admin = True
                 st.rerun()
+            else: 
+                st.error("Invalid Credentials")
     else:
+        st.success("Admin Session Active")
         if st.button("Logout"):
             st.session_state.is_admin = False
             st.rerun()
 
-# Navigation Bar
-st.write("### 🧭 Navigation")
-c1, c2, c3, c4, c5 = st.columns(5)
-with c1:
-    if st.button("🔍 Identify & Log"):
-        st.session_state.current_view = 'Identify'
-with c2:
-    if st.button("🗂️ View Dossier"):
-        st.session_state.current_view = 'Dossier'
-with c3:
-    if st.button("🕒 View Sightings"):
-        st.session_state.current_view = 'Sightings'
-with c4:
-    if st.button("📜 Change Log"):
-        st.session_state.current_view = 'Logs'
-with c5:
-    if st.button("📝 Edit Dossier"):
-        st.session_state.current_view = 'Edit'
+# --- NAVIGATION ---
+st.title("🐧 King Penguin Research Portal")
+n1, n2, n3, n4, n5 = st.columns(5)
+nav_items = [("🔍 Identify", "Identify"), ("🗂️ Dossier", "Dossier"), 
+             ("🕒 Sightings", "Sightings"), ("📝 Edit", "Edit"), ("📜 Logs", "Logs")]
+
+for i, (label, view) in enumerate(nav_items):
+    if eval(f"n{i+1}").button(label):
+        st.session_state.current_view = view
 
 st.divider()
 
-# --- RENDER VIEWS ---
-conn = sqlite3.connect(DB_PATH)
+# --- VIEWS ---
 
 if st.session_state.current_view == 'Identify':
-    st.header("Step 1: Upload New Sighting")
-    up_file = st.file_uploader("Upload Wing Image", type=['jpg', 'jpeg', 'png'])
-    if up_file:
-        query_img = Image.open(up_file).convert('RGB')
-        # Numeric 0 for FLIP_LEFT_RIGHT fixes Pylint E1101 [cite: 137, 759]
-        query_flip = query_img.transpose(0)
-        t_orig = main_transform(query_img).unsqueeze(0)
-        t_flip = main_transform(query_flip).unsqueeze(0)
-        with torch.no_grad():
-            f_orig = main_model(t_orig)
-            f_flip = main_model(t_flip)
-        sim_orig = torch.cosine_similarity(f_orig, db_features)
-        sim_flip = torch.cosine_similarity(f_flip, db_features)
-        m_orig, i_orig = torch.max(sim_orig, dim=0)
-        m_flip, i_flip = torch.max(sim_flip, dim=0)
-        best_score = m_orig if m_orig > m_flip else m_flip
-        best_idx = i_orig if m_orig > m_flip else i_flip
-        matched_file = main_dataset.image_files[best_idx.item()]
+    st.header("New Sighting Identification")
+    up_file = st.file_uploader("Upload Wing Image", type=['jpg', 'png'])
+    
+    if up_file and library_vectors is not None:
+        q_img = Image.open(up_file).convert('RGB')
+        q_vec = extract_embedding(q_img, main_model, main_transform)
         
-        st.subheader("Step 2: Compare Match")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(query_img, caption="New Sighting", use_container_width=True)
-        with col2:
-            match_path = os.path.join(DATA_DIR, matched_file)
-            st.image(Image.open(match_path), caption=f"Match: {matched_file}", use_container_width=True)
-        st.metric("AI Confidence Score", f"{best_score.item()*100:.2f}%")
+        # MANUAL COSINE SIMILARITY: Compare uploaded vector against library vectors
+        # Resulting score ranges from -1 to 1 (usually 0.6+ for a good match)
+        similarities = torch.mm(q_vec, library_vectors.t())
+        confidence, best_idx = torch.max(similarities, dim=1)
         
-        st.divider()
-        st.subheader("Step 3: Verify & Save")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            date_val = st.date_input("Sighting Date", datetime.now())
-        with col_b:
-            loc_val = st.text_input("Location", "Main Colony")
-        if st.checkbox(f"Confirm this is {matched_file}?"):
-            if st.button("Save Sighting to Dossier"):
-                conn.execute(
-                    "INSERT INTO encounters (penguin_id, date, location) VALUES (?,?,?)",
-                    (matched_file, str(date_val), loc_val))
-                conn.commit()
-                st.success(f"Logged sighting for {matched_file}!")
-        else:
-            st.info("To register as a new penguin, use the 'Edit Dossier' tab.")
+        match_id = filenames[best_idx.item()]
+        
+        # Retrieve the individual's Display Name from Supabase
+        with engine.connect() as conn:
+            res = conn.execute(text("SELECT display_name FROM individuals WHERE id=:id"), {"id": match_id}).fetchone()
+        match_name = res[0] if res else match_id
+
+        # Display Comparison
+        c1, c2 = st.columns(2)
+        c1.image(q_img, caption="Recent Sighting", use_container_width=True)
+        c2.image(os.path.join(DATA_DIR, match_id), caption=f"Match: {match_name}", use_container_width=True)
+        st.metric("AI Confidence Score", f"{confidence.item()*100:.2f}%")
 
 elif st.session_state.current_view == 'Dossier':
-    st.header("🗂️ Individual Dossiers")
-    df_inds = pd.read_sql_query("SELECT * FROM individuals", conn)
-    st.dataframe(df_inds, use_container_width=True)
+    st.header("🗂️ Population Gallery")
+    with engine.connect() as conn:
+        df_pop = pd.read_sql_query("SELECT * FROM individuals", conn)
     
-    # Restrict "Auto-Register" to Admin only 
-    if st.session_state.is_admin:
-        if st.button("🚀 Auto-Register All Wing Photos"):
-            curr_ids = df_inds['id'].tolist() if not df_inds.empty else []
-            new_count = 0
-            for fname in os.listdir(DATA_DIR):
-                if fname not in curr_ids and fname.lower().endswith(('.png', '.jpg')):
-                    conn.execute(
-                        "INSERT INTO individuals (id, display_name, age, mother, father, notes) VALUES (?,?,?,?,?,?)",
-                        (fname, fname, "Adult", "Unknown", "Unknown", "Auto-Imported"))
-                    new_count += 1
-            conn.commit()
-            st.success(f"Registered {new_count} new entries!")
-            st.rerun()
+    # RESTRICTED ADMIN SECTION
+    if df_pop.empty:
+        st.info("No individuals found in database.")
+        if st.session_state.is_admin:
+            if st.button("🚀 Auto-Register reference photos"):
+                with engine.connect() as conn:
+                    for fname in filenames:
+                        conn.execute(text(
+                            "INSERT INTO individuals (id, display_name, age, mother, father, notes) "
+                            "VALUES (:id, :dn, 'Adult', 'Unknown', 'Unknown', 'Initial Import') "
+                            "ON CONFLICT (id) DO NOTHING"), {"id": fname, "dn": fname})
+                    conn.commit()
+                st.success("Successfully registered filenames as base identities.")
+                st.rerun()
+        else:
+            st.warning("Admin login required to initialize the population database.")
     else:
-        st.info("Admin login required to initialize the database gallery.")
+        # Render the gallery in a responsive grid
+        for i in range(0, len(df_pop), 4):
+            cols = st.columns(4)
+            for j in range(4):
+                if i + j < len(df_pop):
+                    p = df_pop.iloc[i + j]
+                    with cols[j]:
+                        # Prefer a portrait if one has been uploaded, otherwise show reference wing
+                        img_path = p['rep_image'] if p['rep_image'] else os.path.join(DATA_DIR, p['id'])
+                        if os.path.exists(img_path):
+                            st.image(img_path, use_container_width=True)
+                        st.write(f"**{p['display_name']}**")
+                        st.caption(f"Internal ID: {p['id']}")
 
 elif st.session_state.current_view == 'Sightings':
     st.header("🕒 Sighting History")
-    df_encs = pd.read_sql_query("SELECT * FROM encounters ORDER BY date DESC", conn)
-    st.dataframe(df_encs, use_container_width=True)
-
-elif st.session_state.current_view == 'Logs':
-    st.header("📜 Audit Trail")
-    if st.session_state.is_admin:
-        df_logs = pd.read_sql_query("SELECT * FROM change_log ORDER BY timestamp DESC", conn)
-        st.dataframe(df_logs, use_container_width=True)
-    else:
-        st.warning("Admin access required to view system logs.")
+    with engine.connect() as conn:
+        df_sight = pd.read_sql_query("SELECT * FROM encounters ORDER BY id DESC", conn)
+    st.dataframe(df_sight, use_container_width=True, hide_index=True)
 
 elif st.session_state.current_view == 'Edit':
-    st.header("📝 Edit Metadata")
-    df_ids = pd.read_sql_query("SELECT id FROM individuals", conn)
-    if not df_ids.empty:
-        target = st.selectbox("Select Penguin to Edit", df_ids['id'].tolist())
-        curr = pd.read_sql_query(f"SELECT * FROM individuals WHERE id='{target}'", conn).iloc[0]
+    st.header("📝 Metadata Management")
+    with engine.connect() as conn:
+        df_map = pd.read_sql_query("SELECT id, display_name FROM individuals", conn)
+    
+    if not df_map.empty:
+        # Create a mapping for selecting by name rather than technical ID
+        name_to_id = dict(zip(df_map['display_name'], df_map['id']))
+        choice = st.selectbox("Select Individual", list(name_to_id.keys()))
+        target_id = name_to_id[choice]
         
-        with st.form("edit_form"):
-            n_name = st.text_input("Display Name", curr['display_name'] if curr['display_name'] else "")
-            n_age = st.selectbox("Age", ["Chick", "Juvenile", "Adult"], 
-                                index=["Chick", "Juvenile", "Adult"].index(curr['age']))
-            n_mom = st.text_input("Mother ID", curr['mother'])
-            n_dad = st.text_input("Father ID", curr['father'])
-            n_notes = st.text_area("Notes", curr['notes'])
+        with engine.connect() as conn:
+            curr = conn.execute(text("SELECT * FROM individuals WHERE id=:id"), {"id": target_id}).fetchone()
+        
+        with st.form("metadata_form"):
+            new_dn = st.text_input("Friendly Name", curr[1])
+            new_age = st.selectbox("Life Stage", ["Chick", "Juvenile", "Adult"], index=2)
+            new_notes = st.text_area("Field Notes", curr[5])
             
-            if st.form_submit_button("Submit Changes"):
+            if st.form_submit_button("Save Changes"):
                 if st.session_state.is_admin:
-                    # Direct admin update
-                    conn.execute(
-                        "UPDATE individuals SET display_name=?, age=?, mother=?, father=?, notes=? WHERE id=?",
-                        (n_name, n_age, n_mom, n_dad, n_notes, target))
-                    conn.commit()
-                    st.success("Changes saved by admin.")
-                    st.rerun()
+                    with engine.connect() as conn:
+                        conn.execute(text(
+                            "UPDATE individuals SET display_name=:dn, age=:ag, notes=:nt WHERE id=:id"),
+                            {"dn": new_dn, "ag": new_age, "nt": new_notes, "id": target_id})
+                        conn.commit()
+                    st.success("Metadata updated in Supabase.")
                 else:
-                    # Submit for review
-                    conn.execute(
-                        "INSERT INTO pending_changes (penguin_id, field, new_value, timestamp) VALUES (?,?,?,?)",
-                        (target, "display_name", n_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                    conn.commit()
-                    st.info("Proposals submitted for admin review.")
+                    st.warning("Admin access is required to modify research data.")
     else:
-        st.warning("No individuals found. Please register them in the 'Dossier' tab.")
+        st.warning("Database is currently empty. Please register individuals first.")
 
-conn.close()
+elif st.session_state.current_view == 'Logs':
+    st.header("📜 Audit Logs")
+    if st.session_state.is_admin:
+        with engine.connect() as conn:
+            df_log = pd.read_sql_query("SELECT * FROM change_log ORDER BY id DESC", conn)
+        st.dataframe(df_log, use_container_width=True)
+    else:
+        st.info("Log in as Admin to view the system audit trail.")

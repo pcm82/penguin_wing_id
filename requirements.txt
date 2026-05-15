@@ -1,17 +1,13 @@
+# AI Engine
 torch>=2.0.0
 torchvision>=0.15.0
 timm==0.9.12
-# Essential for CPU math
-faiss-cpu
-# Official package (no URL needed)
-wildlife-tools==0.0.9
-# Manual dependencies to satisfy the tool's requirements
-kornia
-pytorch-metric-learning
-wildlife-datasets
+
+# Interface & Database
 streamlit
 pandas
 psycopg2-binary
 SQLAlchemy
+
+# Image Processing
 Pillow
-opencv-python-headless
